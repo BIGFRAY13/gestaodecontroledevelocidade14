@@ -1,0 +1,6 @@
+{
+  "name": "G.C.V Pro13",
+  "description": "Premium corporate dashboard for professional management and analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
