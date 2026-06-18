@@ -6,9 +6,13 @@ import SearchBar from '../components/SearchBar';
 import RankingPanel from '../components/RankingPanel';
 import Charts from '../components/Charts';
 import CMAAReport from '../components/CMAAReport';
+import DriverRankingReport from '../components/DriverRankingReport';
 import MapView from '../components/MapView';
+import DetailedOccurrencesReport from '../components/DetailedOccurrencesReport';
+import RoadConfigPanel from '../components/RoadConfigPanel';
 
-import { TelemetryRecord } from '../types';
+import { TelemetryRecord, CorrectiveAction, AsphaltedStretch } from '../types';
+import { classifyPoint } from '../services/roadClassificationService';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { fetchOperators } from '../services/operatorService';
@@ -248,7 +252,41 @@ function ChartContainer({ children, hasData }: { children: ReactNode; hasData: b
 
 type ViewMode = 'dashboard' | 'operational' | 'executive' | 'map';
 
-export default function DashboardPage() {
+interface DashboardPageProps {
+  activeTab?: string;
+}
+
+export default function DashboardPage({ activeTab }: DashboardPageProps) {
+  const [stretches, setStretches] = useState<AsphaltedStretch[]>(() => {
+    try {
+      const saved = localStorage.getItem('GCV_ASPHALT_STRETCHES');
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch (e) {
+      console.error("Error reading GCV_ASPHALT_STRETCHES", e);
+    }
+    return [];
+  });
+
+  const [maxDistanceRoad, setMaxDistanceRoad] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('GCV_MAX_DISTANCE_ROAD');
+      return saved ? parseInt(saved, 10) : 30;
+    } catch (e) {
+      console.error("Error reading GCV_MAX_DISTANCE_ROAD", e);
+    }
+    return 30;
+  });
+
+  useEffect(() => {
+    localStorage.setItem('GCV_ASPHALT_STRETCHES', JSON.stringify(stretches));
+  }, [stretches]);
+
+  useEffect(() => {
+    localStorage.setItem('GCV_MAX_DISTANCE_ROAD', maxDistanceRoad.toString());
+  }, [maxDistanceRoad]);
+
   const [data, setData] = useState<TelemetryRecord[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [viewMode, setViewMode] = useState<ViewMode>('dashboard');
@@ -264,6 +302,8 @@ export default function DashboardPage() {
     count: number;
   }[]>([]);
   const [showReport, setShowReport] = useState(false);
+  const [showRankingReport, setShowRankingReport] = useState(false);
+  const [showDetailedOccurrencesReport, setShowDetailedOccurrencesReport] = useState(false);
   const [reportData, setReportData] = useState<TelemetryRecord[]>([]);
   const [operatorMap, setOperatorMap] = useState<Map<string, string>>(new Map());
   const [importHistory, setImportHistory] = useState<ImportHistoryEntry[]>([]);
@@ -281,9 +321,90 @@ export default function DashboardPage() {
   const [selectedMatricula, setSelectedMatricula] = useState('');
   const [selectedOperador, setSelectedOperador] = useState('');
   const [speedRange, setSpeedRange] = useState<'Todas' | '40-50' | '50-60' | '60-70' | '70-80' | '80+'>('Todas');
+  const [excessSpeed, setExcessSpeed] = useState<number | ''>('');
   const [isFilterPanelOpen, setIsFilterPanelOpen] = useState(false);
   const [selectedPointsOnMap, setSelectedPointsOnMap] = useState<TelemetryRecord[]>([]);
   const [selectedMonthIndex, setSelectedMonthIndex] = useState<number | null>(null);
+
+  // States for corrective actions and risk operator modules
+  const [correctiveActions, setCorrectiveActions] = useState<CorrectiveAction[]>(() => {
+    try {
+      const saved = localStorage.getItem('GCV_CORRECTIVE_ACTIONS');
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch (e) {
+      console.error("Error reading GCV_CORRECTIVE_ACTIONS", e);
+    }
+    return [];
+  });
+
+  useEffect(() => {
+    localStorage.setItem('GCV_CORRECTIVE_ACTIONS', JSON.stringify(correctiveActions));
+  }, [correctiveActions]);
+
+  useEffect(() => {
+    console.log('[DEBUG_DASHBOARD] Total de registros carregados na base de dados:', data.length);
+  }, [data]);
+
+  const [selectedOccurrenceForAction, setSelectedOccurrenceForAction] = useState<TelemetryRecord | null>(null);
+  const [operatorSearchTerm, setOperatorSearchTerm] = useState('');
+
+  // BASE 2: Histórico de Ocorrências Selecionadas no Mapa
+  const [historicalSelections, setHistoricalSelections] = useState<TelemetryRecord[]>(() => {
+    try {
+      const saved = localStorage.getItem('GCV_HISTORIC_SELECTIONS_MAP');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          return parsed.map((item: any) => ({
+            ...item,
+            dataHora: item.dataHora ? new Date(item.dataHora) : new Date(),
+            dataSelecao: item.dataSelecao ? item.dataSelecao : new Date().toISOString()
+          }));
+        }
+      }
+    } catch (e) {
+      console.error("Error reading GCV_HISTORIC_SELECTIONS_MAP", e);
+    }
+    return [];
+  });
+
+  // Save BASE 2 to localStorage whenever it changes
+  useEffect(() => {
+    localStorage.setItem('GCV_HISTORIC_SELECTIONS_MAP', JSON.stringify(historicalSelections));
+  }, [historicalSelections]);
+
+  // Helper to save selections to historical base (guarantees no duplicates)
+  const saveSelectionsToHistory = (records: TelemetryRecord[]) => {
+    setHistoricalSelections((prev) => {
+      const updated = [...prev];
+      let changed = false;
+      records.forEach(item => {
+        const exists = updated.some(r => r.id === item.id);
+        if (!exists) {
+          const cleanMat = item.matricula.toString().split('.')[0].replace(/^0+/, '').trim();
+          const mappedName = operatorMap.get(cleanMat) || operatorMap.get(item.matricula.toString().trim()) || item.descricaoOperador || 'SEM MOTORISTA';
+          const enrichedItem = { 
+            ...item, 
+            ...enrichRecord(item), 
+            descricaoOperador: mappedName,
+            dataSelecao: new Date().toISOString()
+          };
+          updated.push(enrichedItem);
+          changed = true;
+        }
+      });
+      return changed ? updated : prev;
+    });
+  };
+
+  // Automatically sync any selectedPointsOnMap to historicalSelections
+  useEffect(() => {
+    if (selectedPointsOnMap.length > 0) {
+      saveSelectionsToHistory(selectedPointsOnMap);
+    }
+  }, [selectedPointsOnMap]);
 
   // Load state history from localStorage/IndexedDB on initial mount
   useEffect(() => {
@@ -529,7 +650,10 @@ export default function DashboardPage() {
       
       setSelectedPointsOnMap(matchingRecords);
       
-      const infractions = matchingRecords.filter(r => r.velocidade > 40);
+      const infractions = matchingRecords.filter(r => {
+        const cls = classifyPoint(r.latitude, r.longitude, r.velocidade, stretches, maxDistanceRoad);
+        return cls.isInfraction;
+      });
       setAlertZone(infractions);
       
       setLoading(false);
@@ -542,8 +666,18 @@ export default function DashboardPage() {
   }, [data]);
 
   const enrichedData = useMemo(() => {
-    return activeDataset.map(enrichRecord);
-  }, [activeDataset]);
+    return activeDataset.map(r => {
+      const enriched = enrichRecord(r);
+      const cls = classifyPoint(r.latitude, r.longitude, r.velocidade, stretches, maxDistanceRoad);
+      return {
+        ...enriched,
+        roadType: cls.type,
+        roadLimit: cls.limit,
+        excesso: cls.excess,
+        isInfraction: cls.isInfraction
+      };
+    });
+  }, [activeDataset, stretches, maxDistanceRoad]);
 
   const availableUnidades = useMemo(() => {
     const set = new Set<string>();
@@ -593,7 +727,86 @@ export default function DashboardPage() {
       );
     });
 
-    return searchFiltered.filter(record => {
+    const result = searchFiltered.filter(record => {
+      // 1. Date filters (Período Inicial)
+      if (appliedStartDate) {
+        const sDate = new Date(appliedStartDate);
+        if (record.dataHora < sDate) return false;
+      }
+      // 2. Date filters (Período Final)
+      if (appliedEndDate) {
+        const eDate = new Date(appliedEndDate + 'T23:59:59');
+        if (record.dataHora > eDate) return false;
+      }
+      // 3. Unidade (Usa filtro selecionado para atualização imediata)
+      if (selectedUnidade !== 'Todas') {
+        if (record.unidade !== selectedUnidade) return false;
+      }
+      // 4. Setor (Frente)
+      if (selectedFrente !== 'Todas') {
+        if (record.frente !== selectedFrente) return false;
+      }
+      // 5. Operação
+      if (selectedOperacao !== 'Todas') {
+        if (record.operacao !== selectedOperacao) return false;
+      }
+      // 6. Frota
+      if (selectedFrota !== 'Todas') {
+        if (record.frota !== selectedFrota) return false;
+      }
+      // 7. Matrícula
+      if (selectedMatricula.trim()) {
+        const mat = String(record.matricula || '').toLowerCase();
+        if (!mat.includes(selectedMatricula.trim().toLowerCase())) return false;
+      }
+      // 8. Operador
+      if (selectedOperador.trim()) {
+        const op = String(record.descricaoOperador || '').toLowerCase();
+        if (!op.includes(selectedOperador.trim().toLowerCase())) return false;
+      }
+      // 9. Faixa de Velocidade
+      if (speedRange !== 'Todas') {
+        const vel = record.velocidade;
+        if (speedRange === '40-50' && (vel < 40 || vel > 50)) return false;
+        if (speedRange === '50-60' && (vel < 50 || vel > 60)) return false;
+        if (speedRange === '60-70' && (vel < 60 || vel > 70)) return false;
+        if (speedRange === '70-80' && (vel < 70 || vel > 80)) return false;
+        if (speedRange === '80+' && vel < 80) return false;
+      }
+      // 10. Excesso de Velocidade
+      if (excessSpeed !== '') {
+        if (record.velocidade < excessSpeed) return false;
+      }
+      return true;
+    });
+
+    console.log('[DEBUG_DASHBOARD] Filtros aplicados:', {
+      selectedUnidade,
+      selectedFrente,
+      selectedOperacao,
+      selectedFrota,
+      excessSpeed,
+      speedRange
+    }, 'Resultados após filtragem:', result.length);
+
+    return result;
+  }, [enrichedData, searchTerm, appliedStartDate, appliedEndDate, selectedUnidade, selectedFrente, selectedOperacao, selectedFrota, selectedMatricula, selectedOperador, speedRange, excessSpeed]);
+
+  const filteredData = filteredRecordsOnMap;
+
+  const filteredDashboardData = useMemo(() => {
+    let list = historicalSelections.map(r => {
+      const enriched = enrichRecord(r);
+      const cls = classifyPoint(r.latitude, r.longitude, r.velocidade, stretches, maxDistanceRoad);
+      return {
+        ...enriched,
+        roadType: cls.type,
+        roadLimit: cls.limit,
+        excesso: cls.excess,
+        isInfraction: cls.isInfraction
+      };
+    });
+    return list.filter(record => {
       // 1. Date filters (Período Inicial)
       if (appliedStartDate) {
         const sDate = new Date(appliedStartDate);
@@ -641,13 +854,7 @@ export default function DashboardPage() {
       }
       return true;
     });
-  }, [enrichedData, searchTerm, appliedStartDate, appliedEndDate, appliedUnidade, selectedFrente, selectedOperacao, selectedFrota, selectedMatricula, selectedOperador, speedRange]);
-
-  const filteredData = filteredRecordsOnMap;
-
-  const filteredDashboardData = useMemo(() => {
-    return selectedPointsOnMap.map(enrichRecord);
-  }, [selectedPointsOnMap]);
+  }, [historicalSelections, appliedStartDate, appliedEndDate, appliedUnidade, selectedFrente, selectedOperacao, selectedFrota, selectedMatricula, selectedOperador, speedRange, stretches, maxDistanceRoad]);
 
   // Calculations for fullscreen month occurrences detours
   const monthName = useMemo(() => {
@@ -685,7 +892,7 @@ export default function DashboardPage() {
 
   // Occurrences summary: count matching speeds > 40
   const totalDashboardOcorrencias = useMemo(() => {
-    return filteredDashboardData.filter(r => r.velocidade > 40).length;
+    return filteredDashboardData.filter(r => (r as any).isInfraction).length;
   }, [filteredDashboardData]);
 
   // Month-by-month index chart
@@ -694,7 +901,7 @@ export default function DashboardPage() {
     const counts = Array(12).fill(0);
     
     filteredDashboardData.forEach(r => {
-      if (r.velocidade > 40) {
+      if ((r as any).isInfraction) {
         const m = r.dataHora.getMonth();
         if (m >= 0 && m < 12) {
           counts[m]++;
@@ -710,20 +917,33 @@ export default function DashboardPage() {
 
   // Ranking of operators with speed > 40
   const driversDashboardRanking = useMemo(() => {
-    const countsMap = new Map<string, { name: string; matricula: string; count: number; maxSpeed: number }>();
+    const countsMap = new Map<string, { 
+      name: string; 
+      matricula: string; 
+      count: number; 
+      maxSpeed: number; 
+      occurrences: TelemetryRecord[];
+    }>();
     
     filteredDashboardData.forEach(r => {
-      if (r.velocidade > 40) {
+      if ((r as any).isInfraction) {
         const driverName = r.descricaoOperador ? String(r.descricaoOperador).trim().toUpperCase() : 'MOTORISTA DESCONHECIDO';
         const driverMat = r.matricula ? String(r.matricula).split('.')[0].replace(/^0+/, '').trim() : '---';
         const key = `${driverName}_${driverMat}`;
         
-        const stats = countsMap.get(key) || { name: driverName, matricula: driverMat, count: 0, maxSpeed: 0 };
+        const stats = countsMap.get(key) || { 
+          name: driverName, 
+          matricula: driverMat, 
+          count: 0, 
+          maxSpeed: 0, 
+          occurrences: [] 
+        };
         countsMap.set(key, {
           name: driverName,
           matricula: driverMat,
           count: stats.count + 1,
-          maxSpeed: Math.max(stats.maxSpeed, r.velocidade)
+          maxSpeed: Math.max(stats.maxSpeed, r.velocidade),
+          occurrences: [...stats.occurrences, r]
         });
       }
     });
@@ -731,6 +951,103 @@ export default function DashboardPage() {
     return Array.from(countsMap.values())
       .sort((a, b) => b.count - a.count);
   }, [filteredDashboardData]);
+
+  // Helper to obtain computed status of occurrence based on registered actions
+  const getOccurrenceStatus = (id: string, actions: CorrectiveAction[]) => {
+    const relevantActions = actions.filter(act => act.occurrenceId === id);
+    if (relevantActions.length === 0) return 'PENDENTE';
+    
+    // Check if "Encerrado" is selected within actionTypes list
+    const isClosed = relevantActions.some(act => act.actionTypes.includes('Encerrado'));
+    if (isClosed) return 'CONCLUÍDA';
+    
+    return 'EM TRATATIVA';
+  };
+
+  // Module 02: Analytical assessment of operator risk index based on speed occurrences > 40 km/h
+  const operatorsRiskIndices = useMemo(() => {
+    const countsMap = new Map<string, { name: string; matricula: string; occurrences: number; maxSpeed: number; lastOccurrence: Date | null }>();
+    
+    enrichedData.forEach(r => {
+      if ((r as any).isInfraction) {
+        const driverName = r.descricaoOperador ? String(r.descricaoOperador).trim().toUpperCase() : 'SEM MOTORISTA';
+        const driverMat = r.matricula ? String(r.matricula).split('.')[0].replace(/^0+/, '').trim() : '---';
+        const key = driverMat || driverName;
+        
+        const stats = countsMap.get(key) || { name: driverName, matricula: driverMat, occurrences: 0, maxSpeed: 0, lastOccurrence: null };
+        const recordDate = r.dataHora instanceof Date ? r.dataHora : new Date(r.dataHora);
+        countsMap.set(key, {
+          name: driverName,
+          matricula: driverMat,
+          occurrences: stats.occurrences + 1,
+          maxSpeed: Math.max(stats.maxSpeed, r.velocidade),
+          lastOccurrence: (!stats.lastOccurrence || recordDate > stats.lastOccurrence) ? recordDate : stats.lastOccurrence
+        });
+      }
+    });
+
+    return Array.from(countsMap.values()).map(o => {
+      let riskLevel: '🔴 ALTO RISCO' | '🟡 MÉDIO RISCO' | '🟢 BAIXO RISCO' = '🟢 BAIXO RISCO';
+      if (o.occurrences > 5) riskLevel = '🔴 ALTO RISCO';
+      else if (o.occurrences >= 3) riskLevel = '🟡 MÉDIO RISCO';
+      
+      return {
+        ...o,
+        riskLevel
+      };
+    }).sort((a, b) => b.occurrences - a.occurrences);
+  }, [enrichedData]);
+
+  // Operator search matching logic
+  const filteredOperatorsRisk = useMemo(() => {
+    return operatorsRiskIndices.filter(op => {
+      if (!operatorSearchTerm.trim()) return true;
+      const term = operatorSearchTerm.toLowerCase();
+      return op.name.toLowerCase().includes(term) || op.matricula.toLowerCase().includes(term);
+    });
+  }, [operatorsRiskIndices, operatorSearchTerm]);
+
+  // Module 05: Aggregate occurrence count categories
+  const occurrenceStats = useMemo(() => {
+    let pendentes = 0;
+    let emTratativa = 0;
+    let concluidas = 0;
+
+    const over40 = enrichedData.filter(r => (r as any).isInfraction);
+
+    over40.forEach(item => {
+      const status = getOccurrenceStatus(item.id, correctiveActions);
+      if (status === 'PENDENTE') pendentes++;
+      else if (status === 'EM TRATATIVA') emTratativa++;
+      else if (status === 'CONCLUÍDA') concluidas++;
+    });
+
+    return {
+      total: over40.length,
+      pendentes,
+      emTratativa,
+      concluidas
+    };
+  }, [enrichedData, correctiveActions]);
+
+  // Operator risk ranges tallies
+  const operatorRiskCounts = useMemo(() => {
+    let alto = 0;
+    let medio = 0;
+    let baixo = 0;
+
+    operatorsRiskIndices.forEach(op => {
+      if (op.riskLevel === '🔴 ALTO RISCO') alto++;
+      else if (op.riskLevel === '🟡 MÉDIO RISCO') medio++;
+      else baixo++;
+    });
+
+    return {
+      alto,
+      medio,
+      baixo
+    };
+  }, [operatorsRiskIndices]);
 
   const kpiData = useMemo(() => {
     const normalize = (str: string) => str.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
@@ -808,6 +1125,56 @@ export default function DashboardPage() {
     return suggestions;
   }, [operatorMap, data]);
 
+  if (activeTab === 'road-config') {
+    return (
+      <div style={{ backgroundColor: '#F8FAFC' }} className="min-h-screen">
+        {!isMapFullscreen && (
+          <header
+            style={{
+              backgroundColor: '#0F172A',
+              borderBottom: '1px solid #1E293B'
+            }}
+            className="sticky top-0 z-[100] w-full"
+          >
+            <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <div
+                  style={{ backgroundColor: '#1D4ED8' }}
+                  className="w-12 h-12 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-600/20"
+                >
+                  <Gauge color="white" size={24} />
+                </div>
+                <div>
+                  <h1 style={{ color: '#FFFFFF' }} className="text-2xl font-black italic tracking-tighter">
+                    G.C.V PRO
+                  </h1>
+                  <p style={{ color: '#94A3B8' }} className="text-[10px] font-black uppercase tracking-widest">
+                    Gestão de Velocidade Inteligente
+                  </p>
+                </div>
+              </div>
+            </div>
+          </header>
+        )}
+        <RoadConfigPanel
+          stretches={stretches}
+          onSaveStretch={(s) => setStretches(prev => {
+            const index = prev.findIndex(x => x.id === s.id);
+            if (index !== -1) {
+              const clone = [...prev];
+              clone[index] = s;
+              return clone;
+            }
+            return [...prev, s];
+          })}
+          onDeleteStretch={(id) => setStretches(prev => prev.filter(x => x.id !== id))}
+          maxDistanceRoad={maxDistanceRoad}
+          onMaxDistanceRoadChange={setMaxDistanceRoad}
+        />
+      </div>
+    );
+  }
+
   return (
     <div style={{ backgroundColor: '#F8FAFC' }} className="min-h-screen">
       {/* Dynamic Header */}
@@ -870,9 +1237,7 @@ export default function DashboardPage() {
           <UploadArea onDataLoaded={handleDataLoaded} />
         </motion.div>
       )}
-
       {/* Main Stats (Visible in all modes but Map and Dashboard) */}
-      {viewMode !== 'map' && viewMode !== 'dashboard' && <DashboardCards data={kpiData} />}
 
       {searchedSpeed !== null && (
         <div className="mb-4 px-5 py-3 bg-brand/10 border border-brand/20 rounded-2xl max-w-2xl mx-auto">
@@ -900,169 +1265,9 @@ export default function DashboardPage() {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -20 }}
+            style={isMapFullscreen ? { transform: 'none' } : undefined}
             className="space-y-6"
           >
-            {/* 1. INDICATORS SECTION - TWO ROWS OF CARDS */}
-            <div className="space-y-6">
-              {/* Row 1: Operations KPIs */}
-              <DashboardCards data={kpiData} />
-
-              {/* Row 2: Performance metrics */}
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 justify-items-center justify-center w-full max-w-7xl mx-auto">
-                {/* Total Occurrences -> FIRST requested component */}
-                <div 
-                  style={{ 
-                    backgroundColor: '#FFFFFF',
-                    border: '2px solid #DC2626',
-                    boxShadow: '0 15px 35px rgba(15, 23, 42, 0.05)',
-                    width: '3cm',
-                    height: '3cm',
-                    minWidth: '3cm',
-                    maxWidth: '3cm',
-                    minHeight: '3cm',
-                    maxHeight: '3cm'
-                  }}
-                  className="rounded-[20px] p-2.5 flex flex-col justify-between items-center text-center transition-all hover:scale-[1.02] mx-auto"
-                >
-                  <div className="flex justify-center items-center mt-0.5">
-                    <div className="w-7 h-7 rounded-lg bg-red-100 flex items-center justify-center text-red-600">
-                      <Gauge size={14} />
-                    </div>
-                  </div>
-                  
-                  <div className="flex flex-col items-center justify-center my-auto min-w-0 w-full px-1">
-                    <p className="text-[7px] font-black uppercase tracking-[0.08em] text-slate-400 leading-tight w-full truncate">
-                      Total de Ocorrências V &gt; 40 km/h
-                    </p>
-                    <h1 style={{ color: '#DC2626' }} className="text-lg font-black mt-0.5 tracking-tight leading-none animate-in fade-in zoom-in-95 duration-300">
-                      {totalDashboardOcorrencias}
-                    </h1>
-                  </div>
-
-                  <div className="w-full mb-0.5 px-1 truncate">
-                    <p className="text-[7px] text-slate-400 font-bold uppercase tracking-wider">
-                      registros com excesso
-                    </p>
-                  </div>
-                </div>
-
-                {/* Total Active Operators */}
-                <div 
-                  style={{ 
-                    backgroundColor: '#FFFFFF',
-                    border: '2px solid #1E3A8A',
-                    boxShadow: '0 15px 35px rgba(15, 23, 42, 0.05)',
-                    width: '3cm',
-                    height: '3cm',
-                    minWidth: '3cm',
-                    maxWidth: '3cm',
-                    minHeight: '3cm',
-                    maxHeight: '3cm'
-                  }}
-                  className="rounded-[20px] p-2.5 flex flex-col justify-between items-center text-center transition-all hover:scale-[1.02] mx-auto"
-                >
-                  <div className="flex justify-center items-center mt-0.5">
-                    <div className="w-7 h-7 rounded-lg bg-blue-100 flex items-center justify-center text-blue-600">
-                      <UserIcon size={14} />
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col items-center justify-center my-auto min-w-0 w-full px-1">
-                    <p className="text-[7px] font-black uppercase tracking-[0.08em] text-slate-400 leading-tight w-full truncate">
-                      Operadores na Busca
-                    </p>
-                    <h1 style={{ color: '#1E3A8A' }} className="text-lg font-black mt-0.5 tracking-tight leading-none animate-in fade-in zoom-in-95 duration-300">
-                      {new Set(filteredDashboardData.map(r => r.matricula)).size}
-                    </h1>
-                  </div>
-
-                  <div className="w-full mb-0.5 px-1 truncate">
-                    <p className="text-[7px] text-slate-400 font-bold uppercase tracking-wider">
-                      motoristas avaliados
-                    </p>
-                  </div>
-                </div>
-
-                {/* Maximum registered speed */}
-                <div 
-                  style={{ 
-                    backgroundColor: '#FFFFFF',
-                    border: '2px solid #EA580C',
-                    boxShadow: '0 15px 35px rgba(15, 23, 42, 0.05)',
-                    width: '3cm',
-                    height: '3cm',
-                    minWidth: '3cm',
-                    maxWidth: '3cm',
-                    minHeight: '3cm',
-                    maxHeight: '3cm'
-                  }}
-                  className="rounded-[20px] p-2.5 flex flex-col justify-between items-center text-center transition-all hover:scale-[1.02] mx-auto"
-                >
-                  <div className="flex justify-center items-center mt-0.5">
-                    <div className="w-7 h-7 rounded-lg bg-orange-100 flex items-center justify-center text-orange-600">
-                      <Car size={14} />
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col items-center justify-center my-auto min-w-0 w-full px-1">
-                    <p className="text-[7px] font-black uppercase tracking-[0.08em] text-slate-400 leading-tight w-full truncate">
-                      Velocidade Máxima
-                    </p>
-                    <h1 style={{ color: '#EA580C' }} className="text-lg font-black mt-0.5 tracking-tight leading-none animate-in fade-in zoom-in-95 duration-300">
-                      {filteredDashboardData.length > 0 
-                        ? `${Math.max(...filteredDashboardData.map(r => r.velocidade)).toFixed(0)}`
-                        : '0'}
-                    </h1>
-                  </div>
-
-                  <div className="w-full mb-0.5 px-1 truncate">
-                    <p className="text-[7px] text-slate-400 font-bold uppercase tracking-wider">
-                      km/h atingidos
-                    </p>
-                  </div>
-                </div>
-
-                {/* Overall Adherence index */}
-                <div 
-                  style={{ 
-                    backgroundColor: '#FFFFFF',
-                    border: '2px solid #16A34A',
-                    boxShadow: '0 15px 35px rgba(15, 23, 42, 0.05)',
-                    width: '3cm',
-                    height: '3cm',
-                    minWidth: '3cm',
-                    maxWidth: '3cm',
-                    minHeight: '3cm',
-                    maxHeight: '3cm'
-                  }}
-                  className="rounded-[20px] p-2.5 flex flex-col justify-between items-center text-center transition-all hover:scale-[1.02] mx-auto"
-                >
-                  <div className="flex justify-center items-center mt-0.5">
-                    <div className="w-7 h-7 rounded-lg bg-emerald-100 flex items-center justify-center text-emerald-600">
-                      <Award size={14} />
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col items-center justify-center my-auto min-w-0 w-full px-1">
-                    <p className="text-[7px] font-black uppercase tracking-[0.08em] text-slate-400 leading-tight w-full truncate">
-                      Aderência Global
-                    </p>
-                    <h1 style={{ color: '#16A34A' }} className="text-lg font-black mt-0.5 tracking-tight leading-none animate-in fade-in zoom-in-95 duration-300">
-                      {filteredDashboardData.length > 0
-                        ? `${(100 - (totalDashboardOcorrencias / filteredDashboardData.length) * 100).toFixed(1)}%`
-                        : '100%'}
-                    </h1>
-                  </div>
-
-                  <div className="w-full mb-0.5 px-1 truncate">
-                    <p className="text-[7px] text-slate-400 font-bold uppercase tracking-wider">
-                      compromisso com a vida
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </div>
-
             {/* Search & Upload Area Unified Panel - Vertically Stacked right above the map */}
             {data.length > 0 && (
               <div 
@@ -1086,17 +1291,7 @@ export default function DashboardPage() {
                     Buscar Velocidade
                   </button>
 
-                  <button
-                    onClick={() => setIsFilterPanelOpen(true)}
-                    style={{ 
-                      backgroundColor: '#10B981',
-                      color: '#FFFFFF'
-                    }}
-                    className="h-10 px-5 rounded-2xl font-black uppercase tracking-wider text-[9px] shadow-md shadow-emerald-500/10 active:scale-95 hover:bg-emerald-600 transition-all cursor-pointer flex items-center gap-1.5"
-                  >
-                    <Filter size={12} />
-                    FILTER
-                  </button>
+
 
                   <button
                     onClick={handleClearSearch}
@@ -1141,14 +1336,37 @@ export default function DashboardPage() {
             )}
 
             {/* 4. MAPA (MapView) */}
-            <div className="w-full h-[550px] rounded-[32px] overflow-hidden shadow-lg border border-slate-200">
+            <div className={isMapFullscreen ? "" : "w-full h-[550px] rounded-[32px] overflow-hidden shadow-lg border border-slate-200"}>
               <MapView 
                 data={filteredData} 
                 selectedRecords={selectedPointsOnMap}
+                stretches={stretches}
                 isFullscreen={isMapFullscreen} 
                 onToggleFullscreen={() => setIsMapFullscreen(!isMapFullscreen)} 
                 onRecordClick={registerOccurrence}
                 onClearSelection={() => setSelectedPointsOnMap([])}
+                onOpenFilters={() => setIsFilterPanelOpen(true)}
+                activeFilters={{
+                  unidade: selectedUnidade,
+                  frente: selectedFrente,
+                  operacao: selectedOperacao,
+                  frota: selectedFrota,
+                  speedRange: speedRange
+                }}
+                selectedUnidade={selectedUnidade}
+                setSelectedUnidade={setSelectedUnidade}
+                selectedFrente={selectedFrente}
+                setSelectedFrente={setSelectedFrente}
+                selectedOperacao={selectedOperacao}
+                setSelectedOperacao={setSelectedOperacao}
+                selectedFrota={selectedFrota}
+                setSelectedFrota={setSelectedFrota}
+                excessSpeed={excessSpeed}
+                setExcessSpeed={setExcessSpeed}
+                availableUnidades={availableUnidades}
+                availableFrentes={availableFrentes}
+                availableOperacoes={availableOperacoes}
+                availableFrotas={availableFrotas}
               />
             </div>
 
@@ -1161,7 +1379,7 @@ export default function DashboardPage() {
                   border: '1px solid #CBD5E1',
                   boxShadow: '0 20px 50px rgba(15, 23, 42, 0.05)'
                 }}
-                className="lg:col-span-2 rounded-[32px] p-8 space-y-6"
+                className="lg:col-span-3 rounded-[32px] p-8 space-y-6"
               >
                 <div className="flex items-center justify-between border-b border-slate-100 pb-4">
                   <div className="flex items-center gap-3">
@@ -1231,78 +1449,8 @@ export default function DashboardPage() {
                   </ChartContainer>
                 </div>
               </div>
-
-              {/* Drivers Ranking -> THIRD requested component */}
-              <div 
-                style={{ 
-                  backgroundColor: '#FFFFFF',
-                  border: '1px solid #CBD5E1',
-                  boxShadow: '0 20px 50px rgba(15, 23, 42, 0.05)'
-                }}
-                className="rounded-[32px] overflow-hidden flex flex-col"
-              >
-                <div 
-                  style={{ backgroundColor: '#0F172A', borderBottom: '1px solid #1E293B' }}
-                  className="p-6 flex items-center justify-between"
-                >
-                  <div>
-                    <h4 style={{ color: '#FFFFFF' }} className="text-sm font-black uppercase tracking-wider">RANKING DE MOTORISTAS</h4>
-                    <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider mt-1">Classificação por excesso de velocidade</p>
-                  </div>
-                </div>
-
-                <div className="p-6 space-y-4 max-h-[320px] overflow-y-auto flex-1">
-                  {driversDashboardRanking.length === 0 ? (
-                    <div className="py-12 text-center text-slate-400 font-bold uppercase tracking-[0.15em] text-[10px]">
-                      Nenhuma ocorrência acima de 40 km/h registrada
-                    </div>
-                  ) : (
-                    driversDashboardRanking.map((item, index) => {
-                      const colors = [
-                        { bg: '#FEF2F2', text: '#DC2626', border: '#FCA5A5' },
-                        { bg: '#FFF7ED', text: '#EA580C', border: '#FDBA74' },
-                        { bg: '#FEFCE8', text: '#CA8A04', border: '#FDE047' },
-                        { bg: '#F8FAFC', text: '#475569', border: '#CBD5E1' }
-                      ];
-                      const rankStyle = colors[index] || colors[3];
-                      return (
-                        <div 
-                          key={`rank-${index}`}
-                          style={{ border: '1px solid #F1F5F9', backgroundColor: '#FCFDFE' }}
-                          className="flex items-center justify-between p-4 rounded-2xl hover:scale-[1.01] transition-all"
-                        >
-                          <div className="flex items-center gap-3 min-w-0 flex-1">
-                            <div 
-                              style={{ backgroundColor: rankStyle.bg, color: rankStyle.text, border: `1px solid ${rankStyle.border}` }}
-                              className="w-8 h-8 rounded-xl flex items-center justify-center font-black text-xs shrink-0"
-                            >
-                              {index + 1}
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <h5 style={{ color: '#0F172A' }} className="text-xs font-black uppercase leading-tight truncate">
-                                {item.name}
-                              </h5>
-                              <p style={{ color: '#64748B' }} className="text-[9px] font-bold mt-0.5 uppercase">
-                                Matrícula: {item.matricula}
-                              </p>
-                            </div>
-                          </div>
-                          
-                          <div className="text-right shrink-0 ml-2">
-                            <span 
-                              style={{ backgroundColor: '#EF4444' }}
-                              className="px-2.5 py-1.5 text-[9px] font-black text-white rounded-full uppercase whitespace-nowrap"
-                            >
-                              {item.count} Ocor.
-                            </span>
-                          </div>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
             </div>
+
 
 
           </motion.div>
@@ -1508,14 +1656,38 @@ export default function DashboardPage() {
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.98 }}
             className={isMapFullscreen ? "fixed inset-0 z-[50] bg-black p-0 m-0" : ""}
+            style={isMapFullscreen ? { transform: 'none' } : undefined}
           >
             <MapView 
               data={filteredData} 
               selectedRecords={selectedPointsOnMap}
+              stretches={stretches}
               isFullscreen={isMapFullscreen} 
               onToggleFullscreen={() => setIsMapFullscreen(!isMapFullscreen)} 
               onRecordClick={registerOccurrence}
               onClearSelection={() => setSelectedPointsOnMap([])}
+              onOpenFilters={() => setIsFilterPanelOpen(true)}
+              activeFilters={{
+                unidade: selectedUnidade,
+                frente: selectedFrente,
+                operacao: selectedOperacao,
+                frota: selectedFrota,
+                speedRange: speedRange
+              }}
+              selectedUnidade={selectedUnidade}
+              setSelectedUnidade={setSelectedUnidade}
+              selectedFrente={selectedFrente}
+              setSelectedFrente={setSelectedFrente}
+              selectedOperacao={selectedOperacao}
+              setSelectedOperacao={setSelectedOperacao}
+              selectedFrota={selectedFrota}
+              setSelectedFrota={setSelectedFrota}
+              excessSpeed={excessSpeed}
+              setExcessSpeed={setExcessSpeed}
+              availableUnidades={availableUnidades}
+              availableFrentes={availableFrentes}
+              availableOperacoes={availableOperacoes}
+              availableFrotas={availableFrotas}
             />
             {!isMapFullscreen && (
               <div className="mt-8 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -1561,6 +1733,36 @@ export default function DashboardPage() {
             searchedSpeed={searchedSpeed}
             onClose={() => setShowReport(false)} 
             onPDFGenerated={addRecordsToRanking}
+            correctiveActions={correctiveActions}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showRankingReport && (
+          <DriverRankingReport 
+            data={filteredDashboardData} 
+            dashboardRanking={driversDashboardRanking}
+            onClose={() => setShowRankingReport(false)}
+            appliedStartDate={appliedStartDate}
+            appliedEndDate={appliedEndDate}
+            appliedUnidade={appliedUnidade}
+            appliedOperacao={selectedOperacao}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showDetailedOccurrencesReport && (
+          <DetailedOccurrencesReport 
+            data={occurrencesForMonth}
+            cardCount={occurrencesForMonth.length}
+            onClose={() => setShowDetailedOccurrencesReport(false)}
+            appliedStartDate={appliedStartDate || startDate}
+            appliedEndDate={appliedEndDate || endDate}
+            appliedUnidade={appliedUnidade || selectedUnidade}
+            appliedOperacao={selectedOperacao}
+            appliedFrente={selectedFrente}
           />
         )}
       </AnimatePresence>
@@ -1575,7 +1777,7 @@ export default function DashboardPage() {
               animate={{ opacity: 0.4 }}
               exit={{ opacity: 0 }}
               onClick={() => setIsFilterPanelOpen(false)}
-              className="fixed inset-0 bg-black z-[120]"
+              className={`fixed inset-0 bg-black ${isMapFullscreen ? 'z-[150]' : 'z-[120]'}`}
             />
             
             {/* Filter Drawer */}
@@ -1585,7 +1787,7 @@ export default function DashboardPage() {
               exit={{ x: '100%' }}
               transition={{ type: 'spring', damping: 25, stiffness: 200 }}
               style={{ backgroundColor: '#FFFFFF', borderLeft: '1px solid #CBD5E1' }}
-              className="fixed right-0 top-0 bottom-0 w-[420px] max-w-full z-[130] shadow-2xl flex flex-col pointer-events-auto"
+              className={`fixed right-0 top-0 bottom-0 w-[420px] max-w-full shadow-2xl flex flex-col pointer-events-auto ${isMapFullscreen ? 'z-[155]' : 'z-[130]'}`}
             >
               <div style={{ backgroundColor: '#0F172A' }} className="p-6 text-white flex items-center justify-between shadow-md">
                 <div className="flex items-center gap-3">
@@ -1898,13 +2100,23 @@ export default function DashboardPage() {
 
             {/* List Table Container */}
             <div className="flex-1 bg-white border border-slate-200 rounded-[32px] overflow-hidden flex flex-col shadow-sm">
-              <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+              <div className="p-6 border-b border-slate-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                 <div>
                   <h3 style={{ color: '#0F172A' }} className="text-base font-black uppercase tracking-tight">Ocorrências Filtradas</h3>
                   <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Lista detalhada ordenada da maior para a menor velocidade</p>
                 </div>
-                <div className="text-xs font-black uppercase tracking-widest text-[#1D4ED8] bg-blue-50 px-3 py-1.5 rounded-xl">
-                  {occurrencesForMonth.length} de {selectedPointsOnMap.length} selecionadas
+                
+                <div className="flex items-center gap-3 ml-auto sm:ml-0">
+                  <button
+                    onClick={() => setShowDetailedOccurrencesReport(true)}
+                    style={{ backgroundColor: '#1D4ED8' }}
+                    className="px-5 h-10 text-white text-[10px] font-black uppercase tracking-widest rounded-xl hover:brightness-110 active:scale-95 transition-all cursor-pointer flex items-center gap-1.5 shadow-md shadow-blue-600/10"
+                  >
+                    📄 Relatório
+                  </button>
+                  <div className="text-xs font-black uppercase tracking-widest text-[#1D4ED8] bg-blue-50 px-3 h-10 flex items-center rounded-xl">
+                    {occurrencesForMonth.length} de {selectedPointsOnMap.length} selecionadas
+                  </div>
                 </div>
               </div>
 
@@ -1982,6 +2194,8 @@ export default function DashboardPage() {
           </motion.div>
         )}
       </AnimatePresence>
+
+
     </div>
   </div>
   );

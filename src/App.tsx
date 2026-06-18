@@ -26,8 +26,9 @@ export default function App() {
       currentPage={activeTab}
       onBackToLanding={() => setCurrentView('landing')}
     >
-      {activeTab === 'dashboard' && <DashboardPage />}
-      {activeTab !== 'dashboard' && (
+      {(activeTab === 'dashboard' || activeTab === 'road-config') ? (
+        <DashboardPage activeTab={activeTab} />
+      ) : (
         <div className="flex items-center justify-center h-full">
           <div className="text-center">
             <h2 className="text-2xl font-bold text-white mb-2">Página em Construção</h2>

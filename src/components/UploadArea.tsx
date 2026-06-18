@@ -96,6 +96,9 @@ export default function UploadArea({ onDataLoaded }: UploadAreaProps) {
       'momento'
     ],
     fleet: [
+      'descricao de frota',
+      'descriçãodefrota',
+      'descricaodefrota',
       'frota',
       'fleet',
       'equipamento',
@@ -110,6 +113,14 @@ export default function UploadArea({ onDataLoaded }: UploadAreaProps) {
       'centro de custo',
       'centrocusto',
       'branch'
+    ],
+    frente: [
+      'frente',
+      'setor',
+      'frente de trabalho',
+      'frentetrabalho',
+      'turno frotas',
+      'frentes'
     ]
   };
 
@@ -134,22 +145,22 @@ export default function UploadArea({ onDataLoaded }: UploadAreaProps) {
       const reader = new FileReader();
       reader.onload = (e) => {
         try {
-          const bstr = e.target?.result as string;
+          const data = e.target?.result as ArrayBuffer;
           
-          if (!bstr || bstr.length === 0) {
+          if (!data || data.byteLength === 0) {
             throw new Error('Arquivo inválido ou corrompido.');
           }
 
           let workbook: XLSX.WorkBook;
           try {
-            // Tentativa de leitura binária padrão para XLSX/XLS/CSV
-            workbook = XLSX.read(bstr, { type: 'binary', cellDates: true });
+            // Tentativa de leitura em array buffer (evita problemas de codificação/corrupção de descompactação)
+            workbook = XLSX.read(data, { type: 'array', cellDates: true });
           } catch (firstReadErr) {
             console.warn('Tentando recuperar arquivo com parâmetros reduzidos para contornar compressão corrompida...', firstReadErr);
             try {
               // Se falhar (corrompimento zip / tamanho inválido), tentamos parâmetros leves para simplificar descompactação do JSZip embutido
-              workbook = XLSX.read(bstr, { 
-                type: 'binary', 
+              workbook = XLSX.read(data, { 
+                type: 'array', 
                 codepage: 65001, 
                 cellDates: true,
                 cellStyles: false,
@@ -239,6 +250,7 @@ export default function UploadArea({ onDataLoaded }: UploadAreaProps) {
           const mappedDTimeKey = findKeyForAlias(COLUMN_ALIASES.datetime);
           const mappedFleetKey = findKeyForAlias(COLUMN_ALIASES.fleet);
           const mappedUnidadeKey = findKeyForAlias(COLUMN_ALIASES.unidade);
+          const mappedFrenteKey = findKeyForAlias(COLUMN_ALIASES.frente);
 
           let importedCount = 0;
           let ignoredCount = 0;
@@ -266,6 +278,7 @@ export default function UploadArea({ onDataLoaded }: UploadAreaProps) {
               const dTimeVal = mappedDTimeKey ? row[mappedDTimeKey] : '';
               const fleetVal = mappedFleetKey ? row[mappedFleetKey] : '';
               const unidadeVal = mappedUnidadeKey ? row[mappedUnidadeKey] : '';
+              const frenteVal = mappedFrenteKey ? row[mappedFrenteKey] : '';
 
               // Se não possui identificador principal nem velocidade, é uma linha de cabeçalho vazia ou rodapé
               if (!regVal && !nameVal && !speedVal) {
@@ -306,14 +319,39 @@ export default function UploadArea({ onDataLoaded }: UploadAreaProps) {
                 const parsed = XLSX.SSF.parse_date_code(numDTime);
                 dataHora = new Date(parsed.y, parsed.m - 1, parsed.d, parsed.H, parsed.M, parsed.S);
               } else {
-                try {
-                  dataHora = new Date(dTimeVal);
-                  if (isNaN(dataHora.getTime())) {
-                    dataHora = parse(dTimeVal, 'dd/MM/yyyy HH:mm:ss', new Date());
-                  }
-                } catch {
-                  dataHora = new Date();
+                const cleanVal = String(dTimeVal || '').trim();
+                let parsedDate: Date | null = null;
+                
+                // Prioritize dd/MM/yyyy forms to prevent standard Date(string) US-first month/day inversion
+                const formatsToTry = [
+                  'dd/MM/yyyy HH:mm:ss',
+                  'dd/MM/yyyy HH:mm',
+                  'dd/MM/yyyy',
+                  'dd-MM-yyyy HH:mm:ss',
+                  'dd-MM-yyyy HH:mm',
+                  'dd-MM-yyyy'
+                ];
+
+                for (const fmt of formatsToTry) {
+                  try {
+                    const temp = parse(cleanVal, fmt, new Date());
+                    if (!isNaN(temp.getTime())) {
+                      parsedDate = temp;
+                      break;
+                    }
+                  } catch {}
                 }
+
+                if (!parsedDate) {
+                  try {
+                    const fallback = new Date(cleanVal);
+                    if (!isNaN(fallback.getTime())) {
+                      parsedDate = fallback;
+                    }
+                  } catch {}
+                }
+
+                dataHora = parsedDate || new Date();
               }
 
               if (isNaN(dataHora.getTime())) {
@@ -342,7 +380,8 @@ export default function UploadArea({ onDataLoaded }: UploadAreaProps) {
                 operacao: String(opVal || '---').trim(),
                 dataHora: dataHora,
                 frota: String(fleetVal || '---').trim(),
-                unidade: unidadeVal ? String(unidadeVal).trim().toUpperCase() : undefined
+                unidade: unidadeVal ? String(unidadeVal).trim().toUpperCase() : undefined,
+                frente: frenteVal ? String(frenteVal).trim().toUpperCase() : undefined
               });
 
               importedCount++;
@@ -371,7 +410,7 @@ export default function UploadArea({ onDataLoaded }: UploadAreaProps) {
           setIsLoading(false);
         }
       };
-      reader.readAsBinaryString(file);
+      reader.readAsArrayBuffer(file);
     } catch (err) {
       setError('Erro ao carregar o arquivo.');
       setIsLoading(false);

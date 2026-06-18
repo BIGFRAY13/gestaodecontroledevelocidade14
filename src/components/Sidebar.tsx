@@ -18,7 +18,7 @@ interface SidebarProps {
 
 const menuItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { id: 'settings', label: 'Settings', icon: Settings },
+  { id: 'road-config', label: 'Configuração de Vias', icon: Settings },
 ];
 
 export default function Sidebar({ isOpen, toggleSidebar, onNavigate, currentPage, onBackToLanding }: SidebarProps) {
