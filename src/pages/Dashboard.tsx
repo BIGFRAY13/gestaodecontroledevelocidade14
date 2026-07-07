@@ -651,7 +651,8 @@ export default function DashboardPage({ activeTab }: DashboardPageProps) {
       setSelectedPointsOnMap(matchingRecords);
       
       const infractions = matchingRecords.filter(r => {
-        const cls = classifyPoint(r.latitude, r.longitude, r.velocidade, stretches, maxDistanceRoad);
+        const enriched = enrichRecord(r);
+        const cls = classifyPoint(r.latitude, r.longitude, r.velocidade, stretches, maxDistanceRoad, enriched.unidade);
         return cls.isInfraction;
       });
       setAlertZone(infractions);
@@ -668,7 +669,7 @@ export default function DashboardPage({ activeTab }: DashboardPageProps) {
   const enrichedData = useMemo(() => {
     return activeDataset.map(r => {
       const enriched = enrichRecord(r);
-      const cls = classifyPoint(r.latitude, r.longitude, r.velocidade, stretches, maxDistanceRoad);
+      const cls = classifyPoint(r.latitude, r.longitude, r.velocidade, stretches, maxDistanceRoad, enriched.unidade);
       return {
         ...enriched,
         roadType: cls.type,
@@ -797,7 +798,7 @@ export default function DashboardPage({ activeTab }: DashboardPageProps) {
   const filteredDashboardData = useMemo(() => {
     let list = historicalSelections.map(r => {
       const enriched = enrichRecord(r);
-      const cls = classifyPoint(r.latitude, r.longitude, r.velocidade, stretches, maxDistanceRoad);
+      const cls = classifyPoint(r.latitude, r.longitude, r.velocidade, stretches, maxDistanceRoad, enriched.unidade);
       return {
         ...enriched,
         roadType: cls.type,
@@ -1128,34 +1129,33 @@ export default function DashboardPage({ activeTab }: DashboardPageProps) {
   if (activeTab === 'road-config') {
     return (
       <div style={{ backgroundColor: '#F8FAFC' }} className="min-h-screen">
-        {!isMapFullscreen && (
-          <header
-            style={{
-              backgroundColor: '#0F172A',
-              borderBottom: '1px solid #1E293B'
-            }}
-            className="sticky top-0 z-[100] w-full"
-          >
-            <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
-              <div className="flex items-center gap-4">
-                <div
-                  style={{ backgroundColor: '#1D4ED8' }}
-                  className="w-12 h-12 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-600/20"
-                >
-                  <Gauge color="white" size={24} />
-                </div>
-                <div>
-                  <h1 style={{ color: '#FFFFFF' }} className="text-2xl font-black italic tracking-tighter">
-                    G.C.V PRO
-                  </h1>
-                  <p style={{ color: '#94A3B8' }} className="text-[10px] font-black uppercase tracking-widest">
-                    Gestão de Velocidade Inteligente
-                  </p>
-                </div>
+        <header
+          style={{
+            backgroundColor: '#0F172A',
+            borderBottom: '1px solid #1E293B',
+            display: isMapFullscreen ? 'none' : 'block'
+          }}
+          className="sticky top-0 z-[100] w-full"
+        >
+          <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div
+                style={{ backgroundColor: '#1D4ED8' }}
+                className="w-12 h-12 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-600/20"
+              >
+                <Gauge color="white" size={24} />
+              </div>
+              <div>
+                <h1 style={{ color: '#FFFFFF' }} className="text-2xl font-black italic tracking-tighter">
+                  G.C.V PRO
+                </h1>
+                <p style={{ color: '#94A3B8' }} className="text-[10px] font-black uppercase tracking-widest">
+                  Gestão de Velocidade Inteligente
+                </p>
               </div>
             </div>
-          </header>
-        )}
+          </div>
+        </header>
         <RoadConfigPanel
           stretches={stretches}
           onSaveStretch={(s) => setStretches(prev => {
@@ -1178,36 +1178,35 @@ export default function DashboardPage({ activeTab }: DashboardPageProps) {
   return (
     <div style={{ backgroundColor: '#F8FAFC' }} className="min-h-screen">
       {/* Dynamic Header */}
-      {!isMapFullscreen && (
-        <header
-          style={{
-            backgroundColor: '#0F172A',
-            borderBottom: '1px solid #1E293B'
-          }}
-          className="sticky top-0 z-[100] w-full"
-        >
-          <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <div
-                style={{ backgroundColor: '#1D4ED8' }}
-                className="w-12 h-12 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-600/20"
-              >
-                <Gauge color="white" size={24} />
-              </div>
-              <div>
-                <h1 style={{ color: '#FFFFFF' }} className="text-2xl font-black italic tracking-tighter">
-                  G.C.V PRO
-                </h1>
-                <p style={{ color: '#94A3B8' }} className="text-[10px] font-black uppercase tracking-widest">
-                  Gestão de Velocidade Inteligente
-                </p>
-              </div>
+      <header
+        style={{
+          backgroundColor: '#0F172A',
+          borderBottom: '1px solid #1E293B',
+          display: isMapFullscreen ? 'none' : 'block'
+        }}
+        className="sticky top-0 z-[100] w-full"
+      >
+        <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div
+              style={{ backgroundColor: '#1D4ED8' }}
+              className="w-12 h-12 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-600/20"
+            >
+              <Gauge color="white" size={24} />
             </div>
-
-            {/* Navigation removed, only one workspace exists */}
+            <div>
+              <h1 style={{ color: '#FFFFFF' }} className="text-2xl font-black italic tracking-tighter">
+                G.C.V PRO
+              </h1>
+              <p style={{ color: '#94A3B8' }} className="text-[10px] font-black uppercase tracking-widest">
+                Gestão de Velocidade Inteligente
+              </p>
+            </div>
           </div>
-        </header>
-      )}
+
+          {/* Navigation removed, only one workspace exists */}
+        </div>
+      </header>
 
       <div className={!isMapFullscreen ? "max-w-7xl mx-auto px-6 py-6 space-y-6 pb-16" : ""}>
         {/* Sub Header for description if not map */}
@@ -1338,6 +1337,7 @@ export default function DashboardPage({ activeTab }: DashboardPageProps) {
             {/* 4. MAPA (MapView) */}
             <div className={isMapFullscreen ? "" : "w-full h-[550px] rounded-[32px] overflow-hidden shadow-lg border border-slate-200"}>
               <MapView 
+                key="map-operational"
                 data={filteredData} 
                 selectedRecords={selectedPointsOnMap}
                 stretches={stretches}
@@ -1393,9 +1393,9 @@ export default function DashboardPage({ activeTab }: DashboardPageProps) {
                   </div>
                 </div>
 
-                <div className="w-full min-h-[320px] h-[320px]">
+                <div className="w-full min-h-[350px] h-[350px]">
                   <ChartContainer hasData={data.length > 0}>
-                    <ResponsiveContainer width="100%" height={300}>
+                    <ResponsiveContainer width="100%" height={350} minHeight={350}>
                       <BarChart data={monthlyDashboardChartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" />
                         <XAxis 
@@ -1659,6 +1659,7 @@ export default function DashboardPage({ activeTab }: DashboardPageProps) {
             style={isMapFullscreen ? { transform: 'none' } : undefined}
           >
             <MapView 
+              key="map-viewmode"
               data={filteredData} 
               selectedRecords={selectedPointsOnMap}
               stretches={stretches}

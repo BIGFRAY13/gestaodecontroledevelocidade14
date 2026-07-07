@@ -8,6 +8,7 @@ import {
   useMap,
   Polyline,
   Polygon,
+  LayerGroup,
 } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -52,12 +53,12 @@ interface Props {
 }
 
 // Custom CSS defined in index.css but we can also use DivIcon for the vertical bar effect
-const createBarIcon = (speed: number, isSelected?: boolean, isFullscreen?: boolean) => {
-  const scaleMultiplier = isFullscreen ? 2.4 : 1.5;
-  const minHeight = isFullscreen ? 24 : 15;
+const createBarIcon = (speed: number, isSelected?: boolean) => {
+  const scaleMultiplier = 1.5;
+  const minHeight = 15;
   const height = Math.max(minHeight, speed * scaleMultiplier);
-  const width = isFullscreen ? 10 : 6;
-  const selectedWidth = isFullscreen ? 16 : 10;
+  const width = 6;
+  const selectedWidth = 10;
   
   let color = '#94A3B8'; // Default grey for low speeds
   if (speed >= 10 && speed <= 20) color = '#3B82F6';      // Bright Blue (Improved contrast)
@@ -71,11 +72,11 @@ const createBarIcon = (speed: number, isSelected?: boolean, isFullscreen?: boole
     return L.divIcon({
       className: 'custom-bar-icon-selected_marker',
       html: `
-        <div style="position: relative;">
+        <div class="bar-icon-inner-selected" style="position: relative;">
           <!-- Glowing high-contrast outline bar -->
           <div style="background-color: ${color}; width: ${selectedWidth}px; height: ${height + 8}px; border-radius: 6px; box-shadow: 0 0 20px #FBBF24, 0 0 8px #FBBF24; border: 3px solid #FFFFFF;"></div>
           <!-- Beacon indicator -->
-          <div style="position: absolute; bottom: -6px; left: ${isFullscreen ? '3.5px' : '1.5px'}; width: 9px; height: 9px; background-color: #FBBF24; border-radius: 50%; box-shadow: 0 0 10px #FBBF24; border: 2px solid #FFFFFF;"></div>
+          <div style="position: absolute; bottom: -6px; left: 1.5px; width: 9px; height: 9px; background-color: #FBBF24; border-radius: 50%; box-shadow: 0 0 10px #FBBF24; border: 2px solid #FFFFFF;"></div>
         </div>
       `,
       iconSize: [selectedWidth, height + 8],
@@ -86,13 +87,13 @@ const createBarIcon = (speed: number, isSelected?: boolean, isFullscreen?: boole
   return L.divIcon({
     className: 'custom-bar-icon',
     html: `
-      <div style="
+      <div class="bar-icon-inner" style="
         background-color: ${color}; 
         width: ${width}px; 
         height: ${height}px; 
         border-radius: 4px; 
         box-shadow: 0 2px 6px rgba(0,0,0,0.5); 
-        border: ${isFullscreen ? '2px' : '1px'} solid #FFFFFF;
+        border: 1px solid #FFFFFF;
       "></div>
     `,
     iconSize: [width, height],
@@ -182,6 +183,21 @@ export default function MapView({
     }
   }, [isFullscreen]);
 
+  // Invalidate map size when fullscreen toggles
+  useEffect(() => {
+    if (map) {
+      // Invalidate immediately
+      map.invalidateSize();
+
+      // And also after a 300ms delay to make sure the transition has completed and container layout is fully rendered
+      const timer = setTimeout(() => {
+        map.invalidateSize();
+      }, 300);
+
+      return () => clearTimeout(timer);
+    }
+  }, [isFullscreen, map]);
+
   // Sync native browser Fullscreen exits with local state and execute invalidateSize
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -233,32 +249,28 @@ export default function MapView({
             await (container as any).msRequestFullscreen();
           }
         }
-        if (map) {
-          setTimeout(() => {
-            map.invalidateSize();
-          }, 500);
-        }
       } catch (err) {
-        console.error(err);
-        // Se fullscreen falhar, retornar automaticamente para o modo normal sem tela preta
-        onToggleFullscreen();
+        console.warn("Fullscreen API is blocked or unsupported, relying on CSS fallback:", err);
+        // Do not call onToggleFullscreen() again to toggle off, let the CSS fallback work!
       }
     } else {
       try {
-        if (document.exitFullscreen) {
-          await document.exitFullscreen();
-        } else if ((document as any).webkitExitFullscreen) {
-          await (document as any).webkitExitFullscreen();
-        } else if ((document as any).msExitFullscreen) {
-          await (document as any).msExitFullscreen();
-        }
-        if (map) {
-          setTimeout(() => {
-            map.invalidateSize();
-          }, 500);
+        const hasNativeFs = !!(
+          document.fullscreenElement ||
+          (document as any).webkitFullscreenElement ||
+          (document as any).msFullscreenElement
+        );
+        if (hasNativeFs) {
+          if (document.exitFullscreen) {
+            await document.exitFullscreen();
+          } else if ((document as any).webkitExitFullscreen) {
+            await (document as any).webkitExitFullscreen();
+          } else if ((document as any).msExitFullscreen) {
+            await (document as any).msExitFullscreen();
+          }
         }
       } catch (err) {
-        console.error(err);
+        console.warn("Could not exit native fullscreen:", err);
       }
     }
   };
@@ -777,46 +789,52 @@ export default function MapView({
         markerZoomAnimation={false}
       >
         {/* Render saved asphalt stretches dynamically on map in Blue color */}
-        {stretches && stretches.map((stretch) => {
-          const path = stretch.coordinates.map(c => [c.lat, c.lng] as [number, number]);
-          return (
-            <Polyline
-              key={stretch.id}
-              positions={path}
-              pathOptions={{ color: '#2563EB', weight: 6, opacity: 0.85 }}
-            >
-              <Popup>
-                <div className="p-2 space-y-1 text-slate-800 text-[11px] font-bold">
-                  <div className="font-extrabold text-slate-950 border-b border-slate-100 pb-1 mb-1 text-xs">
-                    {stretch.name}
-                  </div>
-                  <div className="flex justify-between gap-4">
-                    <span className="text-slate-500 uppercase">Via:</span>
-                    <span className="text-slate-900 font-extrabold">VICINAL ASFALTADA</span>
-                  </div>
-                  <div className="flex justify-between gap-4">
-                    <span className="text-slate-500 uppercase">Extensão:</span>
-                    <span className="text-slate-900 font-extrabold">{calculateStretchLengthStr(stretch)}</span>
-                  </div>
-                  <div className="flex justify-between gap-4">
-                    <span className="text-slate-500 uppercase">Data Cadastro:</span>
-                    <span className="text-slate-900 font-extrabold">
-                      {new Date(stretch.createdAt).toLocaleDateString('pt-BR')}
-                    </span>
-                  </div>
-                </div>
-              </Popup>
-            </Polyline>
-          );
-        })}
+        {stretches && (
+          <LayerGroup key="asphalt-stretches">
+            {stretches.map((stretch) => {
+              const path = stretch.coordinates.map(c => [c.lat, c.lng] as [number, number]);
+              return (
+                <Polyline
+                  key={stretch.id}
+                  positions={path}
+                  pathOptions={{ color: '#2563EB', weight: 6, opacity: 0.85 }}
+                >
+                  <Popup>
+                    <div className="p-2 space-y-1 text-slate-800 text-[11px] font-bold">
+                      <div className="font-extrabold text-slate-950 border-b border-slate-100 pb-1 mb-1 text-xs">
+                        {stretch.name}
+                      </div>
+                      <div className="flex justify-between gap-4">
+                        <span className="text-slate-500 uppercase">Via:</span>
+                        <span className="text-slate-900 font-extrabold">VICINAL ASFALTADA</span>
+                      </div>
+                      <div className="flex justify-between gap-4">
+                        <span className="text-slate-500 uppercase">Extensão:</span>
+                        <span className="text-slate-900 font-extrabold">{calculateStretchLengthStr(stretch)}</span>
+                      </div>
+                      <div className="flex justify-between gap-4">
+                        <span className="text-slate-500 uppercase">Data Cadastro:</span>
+                        <span className="text-slate-900 font-extrabold">
+                          {new Date(stretch.createdAt).toLocaleDateString('pt-BR')}
+                        </span>
+                      </div>
+                    </div>
+                  </Popup>
+                </Polyline>
+              );
+            })}
+          </LayerGroup>
+        )}
         <MapEventController onMapInstance={setMap} />
         {mapType === 'normal' ? (
           <TileLayer
+            key="tile-normal"
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           />
         ) : (
           <TileLayer
+            key="tile-satellite"
             attribution='&copy; <a href="https://www.esri.com/">Esri</a>'
             url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
           />
@@ -824,79 +842,83 @@ export default function MapView({
 
         {showHeatmap ? (
           /* Render Heatmap circles based on concentration module 01 */
-          heatClusters.map((cluster) => {
-            const color = getClusterColor(cluster.count);
-            return (
-              <Circle
-                key={cluster.id}
-                center={[cluster.centerLat, cluster.centerLng]}
-                radius={200}
-                pathOptions={{
-                  fillColor: color,
-                  color: color,
-                  fillOpacity: 0.65,
-                  weight: 2,
-                  dashArray: '3, 6'
-                }}
-              >
-                <Popup>
-                  <div className="p-4 bg-slate-900 border border-white/10 text-white rounded-2xl space-y-3 text-xs min-w-[280px] shadow-2xl">
-                    <div className="border-b border-white/10 pb-2 mb-1 flex items-center justify-between">
-                      <span className="font-sans font-black uppercase tracking-widest text-[9px]" style={{ color }}>
-                        🔥 {getClusterLevelText(cluster.count)}
-                      </span>
-                      <span style={{ backgroundColor: color }} className="inline-block w-4 h-4 rounded-full border border-white/20 animate-pulse shrink-0" />
+          <LayerGroup key="heatmap-circles">
+            {heatClusters.map((cluster) => {
+              const color = getClusterColor(cluster.count);
+              return (
+                <Circle
+                  key={cluster.id}
+                  center={[cluster.centerLat, cluster.centerLng]}
+                  radius={200}
+                  pathOptions={{
+                    fillColor: color,
+                    color: color,
+                    fillOpacity: 0.65,
+                    weight: 2,
+                    dashArray: '3, 6'
+                  }}
+                >
+                  <Popup>
+                    <div className="p-4 bg-slate-900 border border-white/10 text-white rounded-2xl space-y-3 text-xs min-w-[280px] shadow-2xl">
+                      <div className="border-b border-white/10 pb-2 mb-1 flex items-center justify-between">
+                        <span className="font-sans font-black uppercase tracking-widest text-[9px]" style={{ color }}>
+                          🔥 {getClusterLevelText(cluster.count)}
+                        </span>
+                        <span style={{ backgroundColor: color }} className="inline-block w-4 h-4 rounded-full border border-white/20 animate-pulse shrink-0" />
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-center p-2 bg-white/5 rounded-xl">
+                        <div>
+                          <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">Ocorrências</p>
+                          <h4 style={{ color }} className="text-xl font-black mt-0.5">{cluster.count}</h4>
+                        </div>
+                        <div>
+                          <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">Velo Máxima</p>
+                          <h4 className="text-xl font-black text-white mt-0.5">{cluster.maxSpeed.toFixed(0)} <span className="text-[9px]">KM/H</span></h4>
+                        </div>
+                      </div>
+                      <div className="space-y-1.5 pt-1">
+                        <div className="flex justify-between items-center text-[11px]">
+                          <span className="text-slate-400 font-bold uppercase text-[9px] tracking-wider">Velocidade Média:</span>
+                          <span className="font-extrabold text-[#FACC15]">{cluster.avgSpeed.toFixed(1).replace('.', ',')} km/h</span>
+                        </div>
+                        <div className="pt-2 border-t border-white/5">
+                          <span className="text-[9px] text-slate-400 font-bold block uppercase tracking-wider mb-0.5">Operadores envolvidos:</span>
+                          <p className="text-[10px] text-slate-100 font-extrabold uppercase leading-tight tracking-tight leading-normal whitespace-pre-wrap">
+                            {Array.from(cluster.operators).slice(0, 4).join(', ') || 'Nenhum'}
+                            {cluster.operators.size > 4 ? ` (+${cluster.operators.size - 4})` : ''}
+                          </p>
+                        </div>
+                        <div className="pt-2 border-t border-white/5">
+                          <span className="text-[9px] text-slate-400 font-bold block uppercase tracking-wider mb-0.5">Frotas envolvidas:</span>
+                          <p className="text-[10px] text-emerald-400 font-extrabold uppercase leading-tight tracking-tight">
+                            {Array.from(cluster.fleets).slice(0, 5).join(', ') || 'Nenhuma'}
+                            {cluster.fleets.size > 5 ? ` (+${cluster.fleets.size - 5})` : ''}
+                          </p>
+                        </div>
+                      </div>
                     </div>
-                    <div className="grid grid-cols-2 gap-2 text-center p-2 bg-white/5 rounded-xl">
-                      <div>
-                        <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">Ocorrências</p>
-                        <h4 style={{ color }} className="text-xl font-black mt-0.5">{cluster.count}</h4>
-                      </div>
-                      <div>
-                        <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">Velo Máxima</p>
-                        <h4 className="text-xl font-black text-white mt-0.5">{cluster.maxSpeed.toFixed(0)} <span className="text-[9px]">KM/H</span></h4>
-                      </div>
-                    </div>
-                    <div className="space-y-1.5 pt-1">
-                      <div className="flex justify-between items-center text-[11px]">
-                        <span className="text-slate-400 font-bold uppercase text-[9px] tracking-wider">Velocidade Média:</span>
-                        <span className="font-extrabold text-[#FACC15]">{cluster.avgSpeed.toFixed(1).replace('.', ',')} km/h</span>
-                      </div>
-                      <div className="pt-2 border-t border-white/5">
-                        <span className="text-[9px] text-slate-400 font-bold block uppercase tracking-wider mb-0.5">Operadores envolvidos:</span>
-                        <p className="text-[10px] text-slate-100 font-extrabold uppercase leading-tight tracking-tight leading-normal whitespace-pre-wrap">
-                          {Array.from(cluster.operators).slice(0, 4).join(', ') || 'Nenhum'}
-                          {cluster.operators.size > 4 ? ` (+${cluster.operators.size - 4})` : ''}
-                        </p>
-                      </div>
-                      <div className="pt-2 border-t border-white/5">
-                        <span className="text-[9px] text-slate-400 font-bold block uppercase tracking-wider mb-0.5">Frotas envolvidas:</span>
-                        <p className="text-[10px] text-emerald-400 font-extrabold uppercase leading-tight tracking-tight">
-                          {Array.from(cluster.fleets).slice(0, 5).join(', ') || 'Nenhuma'}
-                          {cluster.fleets.size > 5 ? ` (+${cluster.fleets.size - 5})` : ''}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                </Popup>
-              </Circle>
-            );
-          })
+                  </Popup>
+                </Circle>
+              );
+            })}
+          </LayerGroup>
         ) : (
           /* Render normal speed indicators bars with adaptive scale sizes */
-          validPoints.map((item) => {
-            const isSelected = selectedRecords.some((r) => r.id === item.id);
-            return (
-              <Marker
-                key={item.id}
-                position={[Number(item.latitude), Number(item.longitude)]}
-                icon={createBarIcon(item.velocidade, isSelected, isFullscreen)}
-                eventHandlers={{
-                  click: () => handleMarkerClick(item)
-                }}
-              />
-            );
-          })
+          <LayerGroup key="normal-markers">
+            {validPoints.map((item) => {
+              const isSelected = selectedRecords.some((r) => r.id === item.id);
+              return (
+                <Marker
+                  key={item.id}
+                  position={[Number(item.latitude), Number(item.longitude)]}
+                  icon={createBarIcon(item.velocidade, isSelected)}
+                  eventHandlers={{
+                    click: () => handleMarkerClick(item)
+                  }}
+                />
+              );
+            })}
+          </LayerGroup>
         )}
       </MapContainer>
     </div>

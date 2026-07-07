@@ -93,11 +93,11 @@ export default function Charts({ data }: ChartsProps) {
   return (
     <div className="flex flex-col gap-8">
       {/* Infractions by Driver */}
-      <div className="glass-card p-8 min-h-[350px] flex flex-col">
+      <div className="glass-card p-8 min-h-[400px] flex flex-col">
         <h3 className="text-lg font-bold text-white mb-8 tracking-tight">Infrações por Operador</h3>
         <div className="w-full h-[350px] min-h-[350px]">
           <ChartContainer hasData={hasData}>
-            <ResponsiveContainer width="100%" height={320}>
+            <ResponsiveContainer width="100%" height={350} minHeight={350}>
               <BarChart layout="vertical" data={infractionsByDriver}>
                 <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="rgba(255,255,255,0.05)" />
                 <XAxis type="number" hide />
@@ -121,11 +121,11 @@ export default function Charts({ data }: ChartsProps) {
       </div>
 
       {/* Average Speed Trend */}
-      <div className="glass-card p-8 min-h-[350px] flex flex-col">
+      <div className="glass-card p-8 min-h-[400px] flex flex-col">
         <h3 className="text-lg font-bold text-white mb-8 tracking-tight">Tendência de Velocidade Média</h3>
         <div className="w-full h-[350px] min-h-[350px]">
           <ChartContainer hasData={hasData}>
-            <ResponsiveContainer width="100%" height={320}>
+            <ResponsiveContainer width="100%" height={350} minHeight={350}>
               <LineChart data={speedByTime}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(255,255,255,0.05)" />
                 <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12 }} />

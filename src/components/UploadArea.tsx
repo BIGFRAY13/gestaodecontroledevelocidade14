@@ -1,6 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import { Upload, FileSpreadsheet, X, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import JSZip from 'jszip';
 import { TelemetryRecord } from '../types';
 import { parse } from 'date-fns';
 
@@ -18,6 +19,8 @@ export default function UploadArea({ onDataLoaded }: UploadAreaProps) {
     ignored: number;
     error: number;
   } | null>(null);
+  const [progress, setProgress] = useState<number>(0);
+  const [processingStatus, setProcessingStatus] = useState<string>('');
 
   const normalizeKey = (key: string) =>
     key
@@ -137,13 +140,15 @@ export default function UploadArea({ onDataLoaded }: UploadAreaProps) {
     }
 
     setIsLoading(true);
+    setProgress(0);
+    setProcessingStatus('Lendo arquivo...');
     setError(null);
     setSuccess(false);
     setImportStats(null);
 
     try {
       const reader = new FileReader();
-      reader.onload = (e) => {
+      reader.onload = async (e) => {
         try {
           const data = e.target?.result as ArrayBuffer;
           
@@ -156,19 +161,39 @@ export default function UploadArea({ onDataLoaded }: UploadAreaProps) {
             // Tentativa de leitura em array buffer (evita problemas de codificação/corrupção de descompactação)
             workbook = XLSX.read(data, { type: 'array', cellDates: true });
           } catch (firstReadErr) {
-            console.warn('Tentando recuperar arquivo com parâmetros reduzidos para contornar compressão corrompida...', firstReadErr);
+            console.warn('Tentando recuperar arquivo com parâmetros reduzidos ou limpando ZIP...', firstReadErr);
+            
+            let recoveredData = data;
+            const arr = new Uint8Array(data);
+            const isZip = arr.length >= 4 && arr[0] === 0x50 && arr[1] === 0x4B && arr[2] === 0x03 && arr[3] === 0x04;
+            
+            if (isZip) {
+              try {
+                // Se for ZIP, usamos JSZip para descompactar e remontar um ZIP limpo (com tamanhos corretos nos headers locais)
+                const zip = await JSZip.loadAsync(data);
+                recoveredData = await zip.generateAsync({ type: 'arraybuffer' });
+                console.log('ZIP limpo com sucesso usando JSZip.');
+              } catch (zipErr) {
+                console.error('Falha ao tentar limpar o ZIP com JSZip:', zipErr);
+              }
+            }
+
             try {
-              // Se falhar (corrompimento zip / tamanho inválido), tentamos parâmetros leves para simplificar descompactação do JSZip embutido
-              workbook = XLSX.read(data, { 
-                type: 'array', 
-                codepage: 65001, 
-                cellDates: true,
-                cellStyles: false,
-                cellHTML: false,
-                cellFormula: false
-              });
-            } catch (err) {
-              throw new Error('Erro ao descompactar a estrutura interna do arquivo Excel. O arquivo pode estar corrompido de forma irrecuperável.');
+              workbook = XLSX.read(recoveredData, { type: 'array', cellDates: true });
+            } catch (secondReadErr) {
+              try {
+                // Se falhar (corrompimento zip / tamanho inválido), tentamos parâmetros leves para simplificar descompactação do JSZip embutido
+                workbook = XLSX.read(recoveredData, { 
+                  type: 'array', 
+                  codepage: 65001, 
+                  cellDates: true,
+                  cellStyles: false,
+                  cellHTML: false,
+                  cellFormula: false
+                });
+              } catch (err) {
+                throw new Error('Erro ao descompactar a estrutura interna do arquivo Excel. O arquivo pode estar corrompido de forma irrecuperável.');
+              }
             }
           }
 
@@ -256,157 +281,185 @@ export default function UploadArea({ onDataLoaded }: UploadAreaProps) {
           let ignoredCount = 0;
           let errorCount = 0;
           const records: TelemetryRecord[] = [];
+          const totalRows = json.length;
+          const chunkSize = 1000;
+          let currentIndex = 0;
 
-          // 5. Não cancelar toda a importação por causa de linhas com erro.
-          // 6. Importar todos os registros válidos disponíveis.
-          json.forEach((row: any, index) => {
-            try {
-              // Validar linha completamente vazia
-              const rowKeys = Object.keys(row);
-              const hasAnyValue = rowKeys.some(k => row[k] !== '' && row[k] !== null && row[k] !== undefined);
-              if (!hasAnyValue) {
-                ignoredCount++;
-                return;
-              }
-
-              const regVal = mappedRegistrationKey ? row[mappedRegistrationKey] : '';
-              const nameVal = mappedNameKey ? row[mappedNameKey] : '';
-              const speedVal = mappedSpeedKey ? row[mappedSpeedKey] : '';
-              const latVal = mappedLatKey ? row[mappedLatKey] : '';
-              const lonVal = mappedLonKey ? row[mappedLonKey] : '';
-              const opVal = mappedOpKey ? row[mappedOpKey] : '';
-              const dTimeVal = mappedDTimeKey ? row[mappedDTimeKey] : '';
-              const fleetVal = mappedFleetKey ? row[mappedFleetKey] : '';
-              const unidadeVal = mappedUnidadeKey ? row[mappedUnidadeKey] : '';
-              const frenteVal = mappedFrenteKey ? row[mappedFrenteKey] : '';
-
-              // Se não possui identificador principal nem velocidade, é uma linha de cabeçalho vazia ou rodapé
-              if (!regVal && !nameVal && !speedVal) {
-                ignoredCount++;
-                return;
-              }
-
-              const speed = parseFloat(speedVal);
-              const lat = parseFloat(latVal);
-              const lon = parseFloat(lonVal);
-
-              if (isNaN(speed) || speed <= 0) {
-                if (speedVal === '' || speedVal === null || speedVal === undefined || parseFloat(speedVal) === 0) {
+          // Asynchronous Batch Processor to keep the main UI thread free and update progress bar
+          const processChunk = () => {
+            const end = Math.min(currentIndex + chunkSize, totalRows);
+            
+            for (let index = currentIndex; index < end; index++) {
+              const row = json[index];
+              try {
+                // Validar linha completamente vazia
+                const rowKeys = Object.keys(row);
+                const hasAnyValue = rowKeys.some(k => row[k] !== '' && row[k] !== null && row[k] !== undefined);
+                if (!hasAnyValue) {
                   ignoredCount++;
-                } else {
+                  continue;
+                }
+
+                const regVal = mappedRegistrationKey ? row[mappedRegistrationKey] : '';
+                const nameVal = mappedNameKey ? row[mappedNameKey] : '';
+                const speedVal = mappedSpeedKey ? row[mappedSpeedKey] : '';
+                const latVal = mappedLatKey ? row[mappedLatKey] : '';
+                const lonVal = mappedLonKey ? row[mappedLonKey] : '';
+                const opVal = mappedOpKey ? row[mappedOpKey] : '';
+                const dTimeVal = mappedDTimeKey ? row[mappedDTimeKey] : '';
+                const fleetVal = mappedFleetKey ? row[mappedFleetKey] : '';
+                const unidadeVal = mappedUnidadeKey ? row[mappedUnidadeKey] : '';
+                const frenteVal = mappedFrenteKey ? row[mappedFrenteKey] : '';
+
+                // Se não possui identificador principal nem velocidade, é uma linha de cabeçalho vazia ou rodapé
+                if (!regVal && !nameVal && !speedVal) {
+                  ignoredCount++;
+                  continue;
+                }
+
+                const speed = parseFloat(speedVal);
+                const lat = parseFloat(latVal);
+                const lon = parseFloat(lonVal);
+
+                if (isNaN(speed) || speed <= 0) {
+                  if (speedVal === '' || speedVal === null || speedVal === undefined || parseFloat(speedVal) === 0) {
+                    ignoredCount++;
+                  } else {
+                    errorCount++;
+                  }
+                  continue;
+                }
+
+                if (!nameVal && !regVal) {
+                  ignoredCount++;
+                  continue;
+                }
+
+                if (latVal && isNaN(lat)) {
                   errorCount++;
+                  continue;
                 }
-                return;
-              }
-
-              if (!nameVal && !regVal) {
-                ignoredCount++;
-                return;
-              }
-
-              if (latVal && isNaN(lat)) {
-                errorCount++;
-                return;
-              }
-              if (lonVal && isNaN(lon)) {
-                errorCount++;
-                return;
-              }
-
-              let dataHora: Date;
-              if (typeof dTimeVal === 'number' || (typeof dTimeVal === 'string' && !isNaN(Number(dTimeVal)) && dTimeVal.trim() !== '')) {
-                const numDTime = Number(dTimeVal);
-                const parsed = XLSX.SSF.parse_date_code(numDTime);
-                dataHora = new Date(parsed.y, parsed.m - 1, parsed.d, parsed.H, parsed.M, parsed.S);
-              } else {
-                const cleanVal = String(dTimeVal || '').trim();
-                let parsedDate: Date | null = null;
-                
-                // Prioritize dd/MM/yyyy forms to prevent standard Date(string) US-first month/day inversion
-                const formatsToTry = [
-                  'dd/MM/yyyy HH:mm:ss',
-                  'dd/MM/yyyy HH:mm',
-                  'dd/MM/yyyy',
-                  'dd-MM-yyyy HH:mm:ss',
-                  'dd-MM-yyyy HH:mm',
-                  'dd-MM-yyyy'
-                ];
-
-                for (const fmt of formatsToTry) {
-                  try {
-                    const temp = parse(cleanVal, fmt, new Date());
-                    if (!isNaN(temp.getTime())) {
-                      parsedDate = temp;
-                      break;
-                    }
-                  } catch {}
+                if (lonVal && isNaN(lon)) {
+                  errorCount++;
+                  continue;
                 }
 
-                if (!parsedDate) {
-                  try {
-                    const fallback = new Date(cleanVal);
-                    if (!isNaN(fallback.getTime())) {
-                      parsedDate = fallback;
-                    }
-                  } catch {}
+                let dataHora: Date;
+                if (typeof dTimeVal === 'number' || (typeof dTimeVal === 'string' && !isNaN(Number(dTimeVal)) && dTimeVal.trim() !== '')) {
+                  const numDTime = Number(dTimeVal);
+                  const parsed = XLSX.SSF.parse_date_code(numDTime);
+                  dataHora = new Date(parsed.y, parsed.m - 1, parsed.d, parsed.H, parsed.M, parsed.S);
+                } else {
+                  const cleanVal = String(dTimeVal || '').trim();
+                  let parsedDate: Date | null = null;
+                  
+                  // Prioritize dd/MM/yyyy forms to prevent standard Date(string) US-first month/day inversion
+                  const formatsToTry = [
+                    'dd/MM/yyyy HH:mm:ss',
+                    'dd/MM/yyyy HH:mm',
+                    'dd/MM/yyyy',
+                    'dd-MM-yyyy HH:mm:ss',
+                    'dd-MM-yyyy HH:mm',
+                    'dd-MM-yyyy'
+                  ];
+
+                  for (const fmt of formatsToTry) {
+                    try {
+                      const temp = parse(cleanVal, fmt, new Date());
+                      if (!isNaN(temp.getTime())) {
+                        parsedDate = temp;
+                        break;
+                      }
+                    } catch {}
+                  }
+
+                  if (!parsedDate) {
+                    try {
+                      const fallback = new Date(cleanVal);
+                      if (!isNaN(fallback.getTime())) {
+                        parsedDate = fallback;
+                      }
+                    } catch {}
+                  }
+
+                  dataHora = parsedDate || new Date();
                 }
 
-                dataHora = parsedDate || new Date();
-              }
+                if (isNaN(dataHora.getTime())) {
+                  errorCount++;
+                  continue;
+                }
 
-              if (isNaN(dataHora.getTime())) {
+                const now = Date.now();
+                records.push({
+                  id: `c-${now}-${Math.random().toString(36).substring(7)}-${index}`,
+                  codigoOperador: String(regVal || '---').trim(),
+                  matricula: String(regVal || '---').trim(),
+                  descricaoOperador: String(
+                    nameVal ||
+                    row['Descrição do Operador'] ||
+                    row['DESCRIÇÃO DO OPERADOR'] ||
+                    row['Motorista'] ||
+                    row['MOTORISTA'] ||
+                    row['Nome'] ||
+                    row['NOME'] ||
+                    'SEM NOME'
+                  ).trim().toUpperCase(),
+                  velocidade: speed,
+                  latitude: isNaN(lat) ? 0 : lat,
+                  longitude: isNaN(lon) ? 0 : lon,
+                  operacao: String(opVal || '---').trim(),
+                  dataHora: dataHora,
+                  frota: String(fleetVal || '---').trim(),
+                  unidade: unidadeVal ? String(unidadeVal).trim().toUpperCase() : undefined,
+                  frente: frenteVal ? String(frenteVal).trim().toUpperCase() : undefined
+                });
+
+                importedCount++;
+              } catch (err) {
+                console.warn(`Erro irrecuperável na linha ${index}:`, err);
                 errorCount++;
-                return;
               }
-
-              const now = Date.now();
-              records.push({
-                id: `c-${now}-${Math.random().toString(36).substring(7)}-${index}`,
-                codigoOperador: String(regVal || '---').trim(),
-                matricula: String(regVal || '---').trim(),
-                descricaoOperador: String(
-                  nameVal ||
-                  row['Descrição do Operador'] ||
-                  row['DESCRIÇÃO DO OPERADOR'] ||
-                  row['Motorista'] ||
-                  row['MOTORISTA'] ||
-                  row['Nome'] ||
-                  row['NOME'] ||
-                  'SEM NOME'
-                ).trim().toUpperCase(),
-                velocidade: speed,
-                latitude: isNaN(lat) ? 0 : lat,
-                longitude: isNaN(lon) ? 0 : lon,
-                operacao: String(opVal || '---').trim(),
-                dataHora: dataHora,
-                frota: String(fleetVal || '---').trim(),
-                unidade: unidadeVal ? String(unidadeVal).trim().toUpperCase() : undefined,
-                frente: frenteVal ? String(frenteVal).trim().toUpperCase() : undefined
-              });
-
-              importedCount++;
-            } catch (err) {
-              console.warn(`Erro irrecuperável na linha ${index}:`, err);
-              errorCount++;
             }
-          });
 
-          // Exibir resultados ou feedback apropriados
-          if (records.length === 0) {
-            setError(`Nenhum dado pôde ser importado. (Ignorados: ${ignoredCount}, Erros: ${errorCount})`);
-          } else {
-            setImportStats({
-              imported: importedCount,
-              ignored: ignoredCount,
-              error: errorCount
-            });
-            onDataLoaded(records);
-            setSuccess(true);
-            setTimeout(() => setSuccess(false), 8000);
-          }
+            currentIndex = end;
+            const currentPercent = Math.round((currentIndex / totalRows) * 100);
+            setProgress(currentPercent);
+            setProcessingStatus(`Processando: ${currentPercent}%`);
+
+            if (currentIndex < totalRows) {
+              setTimeout(processChunk, 0);
+            } else {
+              // Finalizou o processamento de todos os lotes!
+              // Liberar referências explícitas da memória para ajudar no Garbage Collection imediato
+              (json as any) = null;
+              (workbook as any) = null;
+
+              if (records.length === 0) {
+                setError(`Nenhum dado pôde ser importado. (Ignorados: ${ignoredCount}, Erros: ${errorCount})`);
+              } else {
+                setImportStats({
+                  imported: importedCount,
+                  ignored: ignoredCount,
+                  error: errorCount
+                });
+                onDataLoaded(records);
+                setSuccess(true);
+                setTimeout(() => setSuccess(false), 8000);
+              }
+              setIsLoading(false);
+              setProgress(0);
+              setProcessingStatus('');
+            }
+          };
+
+          // Iniciar processamento do primeiro lote
+          setProcessingStatus('Processando: 1%');
+          setProgress(1);
+          setTimeout(processChunk, 0);
+
         } catch (err) {
           setError(err instanceof Error ? err.message : 'Erro ao processar o arquivo.');
-        } finally {
           setIsLoading(false);
         }
       };
@@ -455,9 +508,17 @@ export default function UploadArea({ onDataLoaded }: UploadAreaProps) {
         />
 
         {isLoading ? (
-          <div className="space-y-1.5">
+          <div className="space-y-1 w-full px-1">
             <Loader2 className="w-6 h-6 text-blue-600 animate-spin mx-auto" strokeWidth={2.5} />
-            <p className="text-slate-700 font-bold tracking-tight text-[9px] uppercase">Processando...</p>
+            <p className="text-slate-700 font-bold tracking-tight text-[8px] uppercase truncate">{processingStatus || 'Processando...'}</p>
+            {progress > 0 && (
+              <div className="w-full bg-slate-100 h-1 rounded-full overflow-hidden mt-1">
+                <div 
+                  className="bg-blue-600 h-1 transition-all duration-300" 
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+            )}
           </div>
         ) : success ? (
           <div className="space-y-1 py-1">

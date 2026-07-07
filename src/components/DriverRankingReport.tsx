@@ -103,7 +103,9 @@ export default function DriverRankingReport({
     }
     return data.filter(record => {
       const roadType = getRoadTypeByRecord(record);
-      return roadType === 'Estrada de Terra' && record.velocidade > 40;
+      const rec = record as any;
+      const isInfraction = rec.isInfraction !== undefined ? rec.isInfraction : record.velocidade > (rec.roadLimit || 40);
+      return roadType === 'Estrada de Terra' && isInfraction;
     }).sort((a, b) => b.velocidade - a.velocidade);
   }, [data, dashboardRanking]);
 

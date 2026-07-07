@@ -44,3 +44,19 @@
   background-color: white !important;
   border-color: rgb(226, 232, 240) !important;
 }
+
+.bar-icon-inner {
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  transform-origin: bottom center;
+}
+.bar-icon-inner-selected {
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  transform-origin: bottom center;
+}
+
+.map-fullscreen .bar-icon-inner {
+  transform: scale(1.6);
+}
+.map-fullscreen .bar-icon-inner-selected {
+  transform: scale(1.6);
+}

@@ -293,7 +293,7 @@ export default function CMAAReport({
                             <td className="p-4 px-6 text-xs font-black uppercase text-slate-900 max-w-xs text-left">
                               <div>{item.descricaoOperador}</div>
                               <div className="text-[9px] font-black tracking-normal text-slate-400 mt-0.5 whitespace-nowrap">
-                                Via: {(item as any).roadType || 'Estrada de Terra'} ({(item as any).roadLimit || 40} km/h) | Excess: +{Number((item as any).excesso || (item.velocidade - 40)).toFixed(1).replace('.', ',')} km/h
+                                Via: {(item as any).roadType || 'Estrada de Terra'} ({(item as any).roadLimit || 40} km/h) | Excess: +{Number((item as any).excesso !== undefined ? (item as any).excesso : (item.velocidade - ((item as any).roadLimit || 40))).toFixed(1).replace('.', ',')} km/h
                               </div>
                             </td>
                             <td className="p-4 px-6 text-sm font-black text-blue-600 text-center">
@@ -467,7 +467,7 @@ export default function CMAAReport({
                       <td style={{ padding: '15px 25px', fontWeight: 'bold', textTransform: 'uppercase', textAlign: 'left' }}>
                         <div>{item.descricaoOperador}</div>
                         <div style={{ fontSize: '9px', fontWeight: '800', color: '#64748B', marginTop: '3px' }}>
-                          Via: {(item as any).roadType || 'Estrada de Terra'} ({(item as any).roadLimit || 40} km/h) — Excess: +{Number((item as any).excesso || (item.velocidade - 40)).toFixed(1).replace('.', ',')} km/h
+                          Via: {(item as any).roadType || 'Estrada de Terra'} ({(item as any).roadLimit || 40} km/h) — Excess: +{Number((item as any).excesso !== undefined ? (item as any).excesso : (item.velocidade - ((item as any).roadLimit || 40))).toFixed(1).replace('.', ',')} km/h
                         </div>
                       </td>
                       <td style={{ padding: '15px 25px', textAlign: 'center', fontWeight: '900', color: '#1D4ED8' }}>{Number(item.velocidade).toFixed(1)} km/h</td>

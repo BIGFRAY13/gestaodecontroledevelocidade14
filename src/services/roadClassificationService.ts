@@ -75,7 +75,8 @@ export function classifyPoint(
   lng: number,
   speed: number,
   stretches: AsphaltedStretch[],
-  maxDistanceMeters: number = 30
+  maxDistanceMeters: number = 30,
+  unidade?: string
 ): RoadDetails {
   let isAsphalt = false;
 
@@ -87,7 +88,14 @@ export function classifyPoint(
   }
 
   const type = isAsphalt ? 'Vicinal Asfaltada' : 'Estrada de Terra';
-  const limit = isAsphalt ? 60 : 40;
+  let limit = isAsphalt ? 60 : 40;
+
+  if (!isAsphalt && unidade) {
+    const normUnidade = unidade.trim().toUpperCase();
+    if (normUnidade === 'UVT' || normUnidade === 'UNC') {
+      limit = 50;
+    }
+  }
 
   const isInfraction = speed > limit;
   const excess = isInfraction ? speed - limit : 0;
